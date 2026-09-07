@@ -1,0 +1,5 @@
+customtkinter>=5.2.0
+psd-tools>=1.9.31
+fpdf2>=2.8.0
+windnd>=1.0.7
+Pillow>=10.0.0

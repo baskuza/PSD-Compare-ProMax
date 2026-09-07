@@ -1,0 +1,26 @@
+# Compiled Python files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# PyInstaller folders
+build/
+dist/
+*.spec
+
+# Test files and local images
+*.psd
+*.png
+*.jpg
+*.jpeg
+*.pdf
+*.html
+
+# Virtual environments
+venv/
+env/
+.env
+
+# OS generated files
+.DS_Store
+Thumbs.db
