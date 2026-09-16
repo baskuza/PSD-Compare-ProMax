@@ -408,48 +408,60 @@ class PSDCompareProMax(ctk.CTk):
         threading.Thread(target=self.generate_visual_worker, args=(f1, f2), daemon=True).start()
         
     def save_diff_psd(self):
-        f1 = self.file1_path.get().strip().strip('"').strip("'")
-        f2 = self.file2_path.get().strip().strip('"').strip("'")
-        
-        if not f1 or not f2:
-            messagebox.showwarning("Incomplete", "Please select or drop both PSD files first.")
-            return
+        try:
+            f1 = self.file1_path.get().strip().strip('"').strip("'")
+            f2 = self.file2_path.get().strip().strip('"').strip("'")
             
-        if not os.path.exists(f2):
-            messagebox.showerror("Error", f"Modified PSD file not found:\n{f2}")
-            return
-            
-        # If user hasn't clicked Analyze yet, auto-analyze on the fly!
-        if not self.last_results:
-            self.summary_label.configure(text="Analyzing structure for diff...", text_color="#93C5FD")
-            self.update_idletasks()
-            try:
-                psd1 = PSDImage.open(f1)
-                dict1 = {}
-                for l in psd1: dict1.update(extract_layers(l))
-                psd2 = PSDImage.open(f2)
-                dict2 = {}
-                for l in psd2: dict2.update(extract_layers(l))
-                stats, results = compare_psd_data(dict1, dict2, load_thumbnails=False)
-                self.last_stats = stats
-                self.last_results = results
-                self.show_results(stats, results)
-            except Exception as e:
-                messagebox.showerror("Error", f"Failed to analyze PSDs:\n{e}")
+            if not f1 or not f2:
+                self.summary_label.configure(text="⚠️ Please select both PSD files first!", text_color="#EF4444")
+                messagebox.showwarning("Incomplete", "Please select or drop both PSD files first.")
                 return
-            
-        out_path = filedialog.asksaveasfilename(
-            title="Save Diff PSD (Added/Modified Layers Only)",
-            defaultextension=".psd",
-            initialfile="Modified_Diff_Only.psd",
-            filetypes=[("PSD Files", "*.psd")]
-        )
-        if not out_path:
-            return
-            
-        self.btn_save_diff.configure(state="disabled", text="Saving...")
-        self.summary_label.configure(text="Saving Diff PSD...", text_color="#93C5FD")
-        threading.Thread(target=self.save_diff_worker, args=(f2, out_path), daemon=True).start()
+                
+            if not os.path.exists(f2):
+                self.summary_label.configure(text="⚠️ Modified PSD file not found!", text_color="#EF4444")
+                messagebox.showerror("Error", f"Modified PSD file not found:\n{f2}")
+                return
+                
+            # If user hasn't clicked Analyze yet, auto-analyze on the fly!
+            if not self.last_results:
+                self.summary_label.configure(text="Analyzing structure for diff...", text_color="#93C5FD")
+                self.update_idletasks()
+                try:
+                    psd1 = PSDImage.open(f1)
+                    dict1 = {}
+                    for l in psd1: dict1.update(extract_layers(l))
+                    psd2 = PSDImage.open(f2)
+                    dict2 = {}
+                    for l in psd2: dict2.update(extract_layers(l))
+                    stats, results = compare_psd_data(dict1, dict2, load_thumbnails=False)
+                    self.last_stats = stats
+                    self.last_results = results
+                    self.show_results(stats, results)
+                except Exception as e:
+                    self.summary_label.configure(text=f"⚠️ Analysis failed: {e}", text_color="#EF4444")
+                    messagebox.showerror("Error", f"Failed to analyze PSDs:\n{e}")
+                    return
+                
+            init_dir = os.path.dirname(f2) if os.path.exists(f2) else ""
+            out_path = filedialog.asksaveasfilename(
+                title="Save Diff PSD (Added/Modified Layers Only)",
+                initialdir=init_dir,
+                defaultextension=".psd",
+                initialfile="Modified_Diff_Only.psd",
+                filetypes=[("PSD Files", "*.psd")]
+            )
+            if not out_path:
+                return
+                
+            self.btn_save_diff.configure(state="disabled", text="Saving...")
+            self.summary_label.configure(text="Saving Diff PSD...", text_color="#93C5FD")
+            threading.Thread(target=self.save_diff_worker, args=(f2, out_path), daemon=True).start()
+        except Exception as e:
+            import traceback
+            err = traceback.format_exc()
+            with open(r"D:\Ai\PSD-Compare-ProMax\save_diff_log.txt", "a", encoding="utf-8") as f:
+                f.write(f"UI Error:\n{err}\n")
+            messagebox.showerror("Error", f"Save action failed:\n{e}")
         
     def save_diff_worker(self, f2, out_path):
         try:
@@ -884,12 +896,46 @@ if __name__ == "__main__":
     parser.add_argument("--file1", help="Path to original PSD")
     parser.add_argument("--file2", help="Path to modified PSD")
     parser.add_argument("--json", help="Path to export JSON output")
+    parser.add_argument("--diff-psd", help="Path to export Diff PSD output directly")
     
     args = parser.parse_args()
     
-    if args.file1 and args.file2 and args.json:
+    if args.file1 and args.file2 and (args.json or args.diff_psd):
         print("🚀 Running in Headless CLI Mode...")
-        run_cli_mode(args.file1, args.file2, args.json)
+        if args.json:
+            run_cli_mode(args.file1, args.file2, args.json)
+        if args.diff_psd:
+            print("🚀 Generating Diff PSD via CLI...")
+            f1, f2, out_path = args.file1, args.file2, args.diff_psd
+            psd1 = PSDImage.open(f1)
+            dict1 = {}
+            for l in psd1: dict1.update(extract_layers(l))
+            psd2 = PSDImage.open(f2)
+            dict2 = {}
+            for l in psd2: dict2.update(extract_layers(l))
+            stats, results = compare_psd_data(dict1, dict2, load_thumbnails=False)
+            
+            changed_paths = set()
+            for r in results:
+                if r.get("tag") in ("added", "modified"):
+                    changed_paths.add(r["path"])
+                    
+            psd = PSDImage.open(f2)
+            def prune_layer(parent_group, current_path=""):
+                for child in reversed(list(parent_group)):
+                    child_path = f"{current_path}/{child.name}" if current_path else child.name
+                    is_group = child.is_group() if callable(getattr(child, 'is_group', None)) else getattr(child, 'is_group', False)
+                    if is_group:
+                        prune_layer(child, child_path)
+                        if len(child) == 0:
+                            parent_group.remove(child)
+                    else:
+                        if child_path not in changed_paths:
+                            parent_group.remove(child)
+            prune_layer(psd)
+            with open(out_path, "wb") as f:
+                psd._record.write(f)
+            print(f"✅ Diff PSD exported successfully to {out_path} ({os.path.getsize(out_path)/1024/1024:.2f} MB)")
     else:
         # Run GUI Mode
         app = PSDCompareProMax()
