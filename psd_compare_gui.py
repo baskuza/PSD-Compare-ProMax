@@ -560,19 +560,21 @@ class PSDCompareProMax(ctk.CTk):
                             parent_group.remove(child)
                             
             prune_layer(psd)
+            remaining_count = len(list(psd.descendants()))
             # Write record directly to avoid slow 6000x6000 software composite rendering in Python
             with open(out_path, "wb") as f:
                 psd._record.write(f)
                 
-            def on_success():
-                self.summary_label.configure(text="✅ Diff PSD Saved!", text_color="#10B981")
+            def on_success(count=remaining_count):
+                self.summary_label.configure(text=f"✅ Saved Diff PSD ({count} layers)", text_color="#10B981")
                 # Open folder and select file in Windows Explorer
                 try:
                     import subprocess
                     subprocess.Popen(f'explorer /select,"{os.path.normpath(out_path)}"')
                 except Exception:
                     pass
-                messagebox.showinfo("Success", f"Saved Diff PSD to:\n{out_path}")
+                msg = f"Saved Diff PSD successfully to:\n{out_path}\n\n📦 Total Layers Saved: {count} (Added & Modified only)"
+                messagebox.showinfo("Success", msg)
                 
             self.after(0, on_success)
             
