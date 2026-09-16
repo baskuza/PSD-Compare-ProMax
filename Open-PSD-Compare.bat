@@ -1,2 +1,2 @@
 @echo off
-start "" "%~dp0dist\PSD-Compare-ProMax.exe"
+start "" "%~dp0dist\PSD-Compare-v2.exe"

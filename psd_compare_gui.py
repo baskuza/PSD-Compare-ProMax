@@ -399,6 +399,13 @@ class PSDCompareProMax(ctk.CTk):
         if path:
             str_var.set(path)
             
+    def update_status(self, title, detail=""):
+        def _update():
+            self.summary_label.configure(text=f"🔄 {title}", text_color="#60A5FA")
+            if hasattr(self, 'status_card_detail') and self.status_card_detail.winfo_exists():
+                self.status_card_detail.configure(text=detail if detail else title)
+        self.after(0, _update)
+        
     def start_compare(self):
         f1 = self.file1_path.get().strip().strip('"').strip("'")
         f2 = self.file2_path.get().strip().strip('"').strip("'")
@@ -406,38 +413,54 @@ class PSDCompareProMax(ctk.CTk):
         self.file2_path.set(f2)
         
         if not f1 or not f2:
+            self.summary_label.configure(text="⚠️ Please select both PSD files!", text_color="#EF4444")
             messagebox.showwarning("Incomplete", "Please select both PSD files.")
             return
             
-        self.btn_compare.configure(state="disabled", text="Analyzing...")
-        self.progress.pack(side="left", padx=20)
+        self.btn_compare.configure(state="disabled", text="⏳ Analyzing...")
+        self.progress.pack(side="right", padx=10)
         self.progress.start()
-        self.summary_label.configure(text="Analyzing structure...")
+        self.summary_label.configure(text="🔄 Starting Analysis...", text_color="#60A5FA")
         
-        # Fast container reset
+        # Fast container reset & display central status card
         self.image_refs.clear()
         if hasattr(self, 'rows_container') and self.rows_container.winfo_exists():
             self.rows_container.destroy()
         self.rows_container = ctk.CTkFrame(self.scroll_frame, fg_color="transparent")
         self.rows_container.pack(fill="both", expand=True)
         
+        card = ctk.CTkFrame(self.rows_container, fg_color="#27272A", corner_radius=12, border_width=1, border_color="#3F3F46")
+        card.pack(pady=60, padx=40)
+        ctk.CTkLabel(card, text="⚙️", font=("Segoe UI", 36)).pack(pady=(20, 5))
+        ctk.CTkLabel(card, text="Analyzing PSD Structure...", font=("Segoe UI", 16, "bold"), text_color="#FFFFFF").pack(padx=30, pady=(0, 5))
+        self.status_card_detail = ctk.CTkLabel(card, text="⏳ Step 1/4: Opening & reading Original PSD...", font=("Segoe UI", 13), text_color="#93C5FD")
+        self.status_card_detail.pack(padx=30, pady=(0, 20))
+        
         load_thumbs = self.load_thumbs_var.get()
         threading.Thread(target=self.process_worker, args=(f1, f2, load_thumbs), daemon=True).start()
         
     def process_worker(self, f1, f2, load_thumbs=False):
+        import time
+        t_start = time.time()
         try:
+            self.update_status("Opening Original PSD...", "⏳ Step 1/4: Reading & extracting layers from Original PSD...")
             psd1 = PSDImage.open(f1)
             dict1 = {}
             for layer in psd1: dict1.update(extract_layers(layer))
             
+            self.update_status("Opening Modified PSD...", f"⏳ Step 2/4: Parsed Original ({len(dict1)} layers). Reading Modified PSD...")
             psd2 = PSDImage.open(f2)
             dict2 = {}
             for layer in psd2: dict2.update(extract_layers(layer))
             
+            self.update_status("Comparing differences...", f"⏳ Step 3/4: Comparing {len(dict1)} vs {len(dict2)} layers...")
             stats, results = compare_psd_data(dict1, dict2, load_thumbnails=load_thumbs)
             
+            elapsed = time.time() - t_start
+            self.update_status("Rendering table...", f"⏳ Step 4/4: Populating table ({len(results)} items)...")
+            
             # Send back to Main UI Thread
-            self.after(0, self.show_results, stats, results)
+            self.after(0, lambda: self.show_results(stats, results, elapsed))
         except Exception as e:
             self.after(0, self.show_error, str(e))
             
@@ -766,10 +789,21 @@ class PSDCompareProMax(ctk.CTk):
                 f.write(traceback.format_exc() + "\n")
             messagebox.showerror("Export Failed", f"An error occurred:\n{str(e)}", parent=self)
         
-    def show_results(self, stats, results):
+    def show_results(self, stats, results, elapsed=0.0):
         self.reset_ui()
         self.last_stats = stats
         self.last_results = results
+        
+        if elapsed > 0:
+            self.summary_label.configure(
+                text=f"✅ Done in {elapsed:.2f}s • {stats['added']} Added | {stats['modified']} Modified | {stats['removed']} Removed",
+                text_color="#10B981"
+            )
+        else:
+            self.summary_label.configure(
+                text=f"✅ Analysis Complete • {stats['added']} Added | {stats['modified']} Modified | {stats['removed']} Removed",
+                text_color="#10B981"
+            )
         
         self.setup_filter_tabs(stats, results)
         self.display_items(results)
