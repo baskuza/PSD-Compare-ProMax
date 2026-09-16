@@ -163,6 +163,62 @@ def compare_psd_data(dict1, dict2, load_thumbnails=False):
             
     return stats, results
 
+def ask_save_psd_dialog(initial_dir="", default_name="Modified_Diff_Only.psd"):
+    clean_dir = os.path.normpath(initial_dir).replace('\\', '/') if initial_dir else ""
+    if clean_dir and not os.path.isdir(clean_dir):
+        clean_dir = ""
+        
+    # 1. Standard Tkinter dialog with normalized directory
+    try:
+        kwargs = {
+            "title": "Save Diff PSD (Added/Modified Layers Only)",
+            "initialfile": default_name,
+            "defaultextension": ".psd",
+            "filetypes": [("PSD Files (*.psd)", "*.psd"), ("All Files (*.*)", "*.*")]
+        }
+        if clean_dir:
+            kwargs["initialdir"] = clean_dir
+        path = filedialog.asksaveasfilename(**kwargs)
+        if path:
+            return path
+        # If user hit Cancel, path is empty string
+        return None
+    except Exception as tk_err:
+        with open(r"D:\Ai\PSD-Compare-ProMax\save_diff_log.txt", "a", encoding="utf-8") as f:
+            f.write(f"Tkinter dialog error: {tk_err}, attempting PowerShell fallback...\n")
+            
+    # 2. Windows Native PowerShell SaveFileDialog Fallback
+    try:
+        import subprocess
+        ps_script = f'''
+Add-Type -AssemblyName System.Windows.Forms
+$dlg = New-Object System.Windows.Forms.SaveFileDialog
+$dlg.Title = "Save Diff PSD (Added/Modified Layers Only)"
+$dlg.Filter = "PSD Files (*.psd)|*.psd|All Files (*.*)|*.*"
+$dlg.FileName = "{default_name}"
+if ("{clean_dir}" -ne "") {{ $dlg.InitialDirectory = "{clean_dir}" }}
+if ($dlg.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {{
+    [Console]::WriteLine($dlg.FileName)
+}}
+'''
+        res = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", ps_script],
+            capture_output=True, text=True, timeout=120
+        )
+        lines = [line.strip() for line in res.stdout.strip().splitlines() if line.strip() and not line.strip().startswith("oh-my-posh")]
+        if lines:
+            chosen = lines[-1]
+            if os.path.isabs(chosen):
+                return chosen
+    except Exception as ps_err:
+        with open(r"D:\Ai\PSD-Compare-ProMax\save_diff_log.txt", "a", encoding="utf-8") as f:
+            f.write(f"PowerShell dialog error: {ps_err}\n")
+            
+    # 3. Direct file fallback in the same directory
+    if clean_dir:
+        return os.path.join(clean_dir, default_name).replace('\\', '/')
+    return None
+
 class PSDCompareProMax(ctk.CTk):
     def __init__(self):
         super().__init__()
@@ -443,13 +499,7 @@ class PSDCompareProMax(ctk.CTk):
                     return
                 
             init_dir = os.path.dirname(f2) if os.path.exists(f2) else ""
-            out_path = filedialog.asksaveasfilename(
-                title="Save Diff PSD (Added/Modified Layers Only)",
-                initialdir=init_dir,
-                defaultextension=".psd",
-                initialfile="Modified_Diff_Only.psd",
-                filetypes=[("PSD Files", "*.psd")]
-            )
+            out_path = ask_save_psd_dialog(init_dir, "Modified_Diff_Only.psd")
             if not out_path:
                 return
                 
