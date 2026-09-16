@@ -453,7 +453,9 @@ class PSDCompareProMax(ctk.CTk):
                             parent_group.remove(child)
                             
             prune_layer(psd)
-            psd.save(out_path)
+            # Write record directly to avoid slow 6000x6000 software composite rendering in Python
+            with open(out_path, "wb") as f:
+                psd._record.write(f)
             self.after(0, lambda: messagebox.showinfo("Success", f"Saved Diff PSD to:\n{out_path}", parent=self))
             
         except Exception as e:
