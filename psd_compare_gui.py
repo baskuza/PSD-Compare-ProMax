@@ -12,18 +12,18 @@ ctk.set_appearance_mode("Dark")
 ctk.set_default_color_theme("blue")
 
 def extract_layers(layer, path="", counter=None, depth=0, parent_id=None):
-    """Extract metadata using Layer ID as the ultimate source of truth."""
+    """Extract metadata using stable layer path hierarchy as key."""
     if counter is None:
         counter = [0]
         
     layers_dict = {}
     current_path = f"{path}/{layer.name}" if path else layer.name
     
-    # Extract unique layer ID (if available, fallback to path)
-    layer_id = getattr(layer, 'layer_id', current_path)
+    # Use path as primary key to avoid layer_id collision (-1 in Live2D exports)
+    key = current_path
     
     props = {
-        "id": layer_id,
+        "id": key,
         "name": layer.name,
         "path": current_path,
         "depth": depth,
@@ -45,14 +45,14 @@ def extract_layers(layer, path="", counter=None, depth=0, parent_id=None):
         except Exception:
             props["text"] = "[Unreadable]"
             
-    layers_dict[layer_id] = props
+    layers_dict[key] = props
     counter[0] += 1
     
     # Recurse if group
     is_group = layer.is_group() if callable(getattr(layer, 'is_group', None)) else getattr(layer, 'is_group', False)
     if is_group:
         for child in layer:
-            layers_dict.update(extract_layers(child, current_path, counter, depth + 1, layer_id))
+            layers_dict.update(extract_layers(child, current_path, counter, depth + 1, key))
             
     return layers_dict
 
@@ -60,16 +60,22 @@ from PIL import Image
 
 def get_thumb(layer):
     try:
-        # Avoid composite rendering of heavy groups if possible, but try to get pixels
+        is_group = layer.is_group() if callable(getattr(layer, 'is_group', None)) else getattr(layer, 'is_group', False)
+        if is_group:
+            return None
+        has_pixels = getattr(layer, 'has_pixels', None)
+        if callable(has_pixels) and not has_pixels():
+            return None
+            
         img = layer.topil()
         if img:
-            img.thumbnail((120, 120), Image.Resampling.LANCZOS)
+            img.thumbnail((60, 60), Image.Resampling.BOX)
             return img
     except Exception:
         pass
     return None
 
-def compare_psd_data(dict1, dict2):
+def compare_psd_data(dict1, dict2, load_thumbnails=False):
     """Compare two extracted dictionaries and return structured stats and changes."""
     all_keys = set(dict1.keys()).union(set(dict2.keys()))
     stats = {"added": 0, "removed": 0, "modified": 0}
@@ -82,7 +88,7 @@ def compare_psd_data(dict1, dict2):
             temp_results[key] = {
                 "status": "🟢 Added", "path": l2["path"], "name": l2["name"], "visible": l2["visible"], "depth": l2["depth"], "kind": l2.get("kind", "unknown"),
                 "details": "New Layer Created", "tag": "added",
-                "thumb_before": None, "thumb_after": get_thumb(l2["layer_ref"])
+                "thumb_before": None, "thumb_after": get_thumb(l2["layer_ref"]) if load_thumbnails else None
             }
             stats["added"] += 1
         elif key not in dict2:
@@ -90,7 +96,7 @@ def compare_psd_data(dict1, dict2):
             temp_results[key] = {
                 "status": "🔴 Removed", "path": l1["path"], "name": l1["name"], "visible": l1["visible"], "depth": l1["depth"], "kind": l1.get("kind", "unknown"),
                 "details": "Layer Deleted", "tag": "removed",
-                "thumb_before": get_thumb(l1["layer_ref"]), "thumb_after": None
+                "thumb_before": get_thumb(l1["layer_ref"]) if load_thumbnails else None, "thumb_after": None
             }
             stats["removed"] += 1
         else:
@@ -119,24 +125,24 @@ def compare_psd_data(dict1, dict2):
                 temp_results[key] = {
                     "status": "🔵 Modified", "path": l2["path"], "name": l2["name"], "visible": l2["visible"], "depth": l2["depth"], "kind": l2.get("kind", "unknown"),
                     "details": " | ".join(changes), "tag": "modified",
-                    "thumb_before": get_thumb(l1["layer_ref"]), "thumb_after": get_thumb(l2["layer_ref"])
+                    "thumb_before": get_thumb(l1["layer_ref"]) if load_thumbnails else None, 
+                    "thumb_after": get_thumb(l2["layer_ref"]) if load_thumbnails else None
                 }
                 stats["modified"] += 1
                 
-    # Build tree context
+    # Build tree context with cycle protection
     keys_to_show = set(temp_results.keys())
     for key in list(keys_to_show):
-        curr = dict2.get(key)
-        while curr and curr.get("parent_id"):
-            p_id = curr["parent_id"]
-            keys_to_show.add(p_id)
-            curr = dict2.get(p_id)
-            
-        curr = dict1.get(key)
-        while curr and curr.get("parent_id"):
-            p_id = curr["parent_id"]
-            keys_to_show.add(p_id)
-            curr = dict1.get(p_id)
+        for d in (dict2, dict1):
+            curr = d.get(key)
+            visited = {key}
+            while curr and curr.get("parent_id"):
+                p_id = curr["parent_id"]
+                if p_id in visited:
+                    break
+                visited.add(p_id)
+                keys_to_show.add(p_id)
+                curr = d.get(p_id)
 
     results = []
     def get_sort_key(k):
@@ -246,12 +252,19 @@ class PSDCompareProMax(ctk.CTk):
         
         # Primary Action (Right aligned)
         self.btn_compare = ctk.CTkButton(action_frame, text="✨ Analyze Differences", 
-                                         font=("Segoe UI", 14, "bold"), height=40, width=200,
+                                         font=("Segoe UI", 14, "bold"), height=40, width=190,
                                          fg_color="#2563EB", hover_color="#1D4ED8", corner_radius=8,
                                          command=self.start_compare)
         self.btn_compare.pack(side="right")
         
-        self.progress = ctk.CTkProgressBar(action_frame, mode="indeterminate", width=150, fg_color=card_color, progress_color="#2563EB")
+        self.load_thumbs_var = ctk.BooleanVar(value=False)
+        self.chk_thumbs = ctk.CTkCheckBox(action_frame, text="Layer Thumbnails", 
+                                          variable=self.load_thumbs_var,
+                                          font=("Segoe UI", 12), text_color=text_muted,
+                                          fg_color="#2563EB", hover_color="#1D4ED8")
+        self.chk_thumbs.pack(side="right", padx=15)
+        
+        self.progress = ctk.CTkProgressBar(action_frame, mode="indeterminate", width=120, fg_color=card_color, progress_color="#2563EB")
         self.progress.set(0)
         
         # Secondary Actions (Left aligned)
@@ -293,26 +306,36 @@ class PSDCompareProMax(ctk.CTk):
                       font=("Segoe UI", 12, "bold"), command=lambda: self.browse_file(str_var)).pack(side="right")
                       
     def setup_table(self, parent):
+        # Quick Filter Bar
+        self.filter_frame = ctk.CTkFrame(parent, fg_color="transparent")
+        self.filter_frame.pack(fill="x", pady=(0, 10))
+        self.filter_buttons = {}
+        
         self.scroll_frame = ctk.CTkScrollableFrame(parent, fg_color="#27272A", border_width=1, border_color="#3F3F46", corner_radius=12)
         self.scroll_frame.pack(fill="both", expand=True)
         
         self.image_refs = []
         
         # Header Row (Muted, sleek)
-        header_frame = ctk.CTkFrame(self.scroll_frame, fg_color="transparent")
-        header_frame.pack(fill="x", pady=(10, 10), padx=10)
+        self.header_frame = ctk.CTkFrame(self.scroll_frame, fg_color="transparent")
+        self.header_frame.pack(fill="x", pady=(10, 10), padx=10)
         
         text_muted = "#A1A1AA"
-        ctk.CTkLabel(header_frame, text="👁️", font=("Segoe UI", 12), width=30, text_color=text_muted).pack(side="left", padx=5)
-        ctk.CTkLabel(header_frame, text="BEFORE", font=("Segoe UI", 11, "bold"), width=60, text_color=text_muted).pack(side="left", padx=10)
-        ctk.CTkLabel(header_frame, text="AFTER", font=("Segoe UI", 11, "bold"), width=60, text_color=text_muted).pack(side="left", padx=10)
-        ctk.CTkLabel(header_frame, text="LAYER STRUCTURE", font=("Segoe UI", 11, "bold"), anchor="w", text_color=text_muted).pack(side="left", padx=20, fill="x", expand=True)
-        ctk.CTkLabel(header_frame, text="STATUS", font=("Segoe UI", 11, "bold"), width=100, text_color=text_muted).pack(side="right", padx=15)
+        ctk.CTkLabel(self.header_frame, text="👁️", font=("Segoe UI", 12), width=30, text_color=text_muted).pack(side="left", padx=5)
+        self.hdr_before = ctk.CTkLabel(self.header_frame, text="BEFORE", font=("Segoe UI", 11, "bold"), width=50, text_color=text_muted)
+        self.hdr_before.pack(side="left", padx=5)
+        self.hdr_after = ctk.CTkLabel(self.header_frame, text="AFTER", font=("Segoe UI", 11, "bold"), width=50, text_color=text_muted)
+        self.hdr_after.pack(side="left", padx=5)
+        ctk.CTkLabel(self.header_frame, text="LAYER STRUCTURE", font=("Segoe UI", 11, "bold"), anchor="w", text_color=text_muted).pack(side="left", padx=15, fill="x", expand=True)
+        ctk.CTkLabel(self.header_frame, text="STATUS", font=("Segoe UI", 11, "bold"), width=90, text_color=text_muted).pack(side="right", padx=15)
         
         # Divider below header
         ctk.CTkFrame(self.scroll_frame, height=1, fg_color="#3F3F46").pack(fill="x", padx=15, pady=(0, 5))
         
-        self.empty_label = ctk.CTkLabel(self.scroll_frame, text="Drop PSDs and click Analyze to begin", font=("Segoe UI", 14), text_color="#71717A")
+        self.rows_container = ctk.CTkFrame(self.scroll_frame, fg_color="transparent")
+        self.rows_container.pack(fill="both", expand=True)
+        
+        self.empty_label = ctk.CTkLabel(self.rows_container, text="Drop PSDs and click Analyze to begin", font=("Segoe UI", 14), text_color="#71717A")
         self.empty_label.pack(pady=80)
         
     def browse_file(self, str_var):
@@ -333,20 +356,19 @@ class PSDCompareProMax(ctk.CTk):
         self.btn_compare.configure(state="disabled", text="Analyzing...")
         self.progress.pack(side="left", padx=20)
         self.progress.start()
-        self.summary_label.configure(text="Background Worker Running...")
+        self.summary_label.configure(text="Analyzing structure...")
         
-        # Clear previous dynamic rows
-        for widget in self.scroll_frame.winfo_children():
-            if widget not in [self.empty_label] and "frame" in str(type(widget)).lower() and "header" not in str(widget).lower():
-                widget.destroy()
-        
-        self.empty_label.pack_forget()
+        # Fast container reset
         self.image_refs.clear()
+        if hasattr(self, 'rows_container') and self.rows_container.winfo_exists():
+            self.rows_container.destroy()
+        self.rows_container = ctk.CTkFrame(self.scroll_frame, fg_color="transparent")
+        self.rows_container.pack(fill="both", expand=True)
         
-        # Run in Background Worker Thread
-        threading.Thread(target=self.process_worker, args=(f1, f2), daemon=True).start()
+        load_thumbs = self.load_thumbs_var.get()
+        threading.Thread(target=self.process_worker, args=(f1, f2, load_thumbs), daemon=True).start()
         
-    def process_worker(self, f1, f2):
+    def process_worker(self, f1, f2, load_thumbs=False):
         try:
             psd1 = PSDImage.open(f1)
             dict1 = {}
@@ -356,7 +378,7 @@ class PSDCompareProMax(ctk.CTk):
             dict2 = {}
             for layer in psd2: dict2.update(extract_layers(layer))
             
-            stats, results = compare_psd_data(dict1, dict2)
+            stats, results = compare_psd_data(dict1, dict2, load_thumbnails=load_thumbs)
             
             # Send back to Main UI Thread
             self.after(0, self.show_results, stats, results)
@@ -651,77 +673,142 @@ class PSDCompareProMax(ctk.CTk):
         self.last_stats = stats
         self.last_results = results
         
-        for r in results:
-            row = ctk.CTkFrame(self.scroll_frame, fg_color="transparent", corner_radius=0)
-            row.pack(fill="x", pady=2, padx=10)
+        self.setup_filter_tabs(stats, results)
+        self.display_items(results)
+        
+    def setup_filter_tabs(self, stats, results):
+        for widget in self.filter_frame.winfo_children():
+            widget.destroy()
             
-            # Subtle divider for rows
-            ctk.CTkFrame(row, height=1, fg_color="#333333").pack(side="bottom", fill="x", padx=5)
+        total_changes = stats["added"] + stats["removed"] + stats["modified"]
+        
+        filters = [
+            ("all", f"All ({len(results)})", None),
+            ("changes", f"⚡ Changes Only ({total_changes})", "#2563EB"),
+            ("added", f"🟢 Added ({stats['added']})", "#10B981"),
+            ("removed", f"🔴 Removed ({stats['removed']})", "#EF4444"),
+            ("modified", f"🔵 Modified ({stats['modified']})", "#3B82F6"),
+        ]
+        
+        self.active_filter = "all"
+        for fid, text, color in filters:
+            btn = ctk.CTkButton(
+                self.filter_frame, text=text, height=32,
+                fg_color="#2563EB" if fid == "all" else "#27272A",
+                hover_color="#3F3F46", text_color="#FFFFFF",
+                font=("Segoe UI", 12, "bold"),
+                command=lambda f=fid: self.apply_filter(f)
+            )
+            btn.pack(side="left", padx=(0, 8))
+            self.filter_buttons[fid] = btn
             
-            # Inner container
-            content = ctk.CTkFrame(row, fg_color="transparent")
-            content.pack(fill="x", pady=6)
+    def apply_filter(self, fid):
+        self.active_filter = fid
+        for k, btn in self.filter_buttons.items():
+            btn.configure(fg_color="#2563EB" if k == fid else "#27272A")
             
-            # Eye icon
-            eye_text = "👁️" if r["visible"] else "⬛"
-            ctk.CTkLabel(content, text=eye_text, font=("Segoe UI", 16), width=30).pack(side="left", padx=5)
+        if fid == "all":
+            items = self.last_results
+        elif fid == "changes":
+            items = [r for r in self.last_results if r["tag"] in ("added", "removed", "modified")]
+        else:
+            items = [r for r in self.last_results if r["tag"] == fid]
             
-            # Thumbnails (Before & After)
-            def add_thumb(parent, img_pil):
+        self.display_items(items)
+
+    def display_items(self, items):
+        if hasattr(self, 'rows_container') and self.rows_container.winfo_exists():
+            self.rows_container.destroy()
+        self.rows_container = ctk.CTkFrame(self.scroll_frame, fg_color="transparent")
+        self.rows_container.pack(fill="both", expand=True)
+        self.image_refs.clear()
+        
+        if not items:
+            lbl = ctk.CTkLabel(self.rows_container, text="No layers match this filter", font=("Segoe UI", 14), text_color="#71717A")
+            lbl.pack(pady=60)
+            return
+            
+        self._current_render_items = items
+        self._render_batch(0)
+        
+    def _render_batch(self, start_idx):
+        if not hasattr(self, 'rows_container') or not self.rows_container.winfo_exists():
+            return
+            
+        batch_size = 35
+        items = self._current_render_items
+        end_idx = min(start_idx + batch_size, len(items))
+        
+        has_thumbs = self.load_thumbs_var.get()
+        
+        for i in range(start_idx, end_idx):
+            self.render_single_row(self.rows_container, items[i], has_thumbs)
+            
+        if end_idx < len(items):
+            self.summary_label.configure(text=f"Loaded {end_idx}/{len(items)} layers...")
+            self.after(2, self._render_batch, end_idx)
+        else:
+            total = sum(self.last_stats.values()) if self.last_stats else 0
+            if total == 0:
+                self.summary_label.configure(text="✅ Files are structurally identical", text_color="#10B981")
+            else:
+                self.summary_label.configure(
+                    text=f"{total} Changes (+{self.last_stats['added']} -{self.last_stats['removed']} ~{self.last_stats['modified']})",
+                    text_color="#F8FAFC"
+                )
+
+    def render_single_row(self, parent, r, has_thumbs=False):
+        row = ctk.CTkFrame(parent, fg_color="transparent", corner_radius=0)
+        row.pack(fill="x", pady=1, padx=5)
+        
+        ctk.CTkFrame(row, height=1, fg_color="#333333").pack(side="bottom", fill="x", padx=5)
+        content = ctk.CTkFrame(row, fg_color="transparent")
+        content.pack(fill="x", pady=3)
+        
+        # Eye icon
+        eye_text = "👁️" if r["visible"] else "⬛"
+        ctk.CTkLabel(content, text=eye_text, font=("Segoe UI", 13), width=25).pack(side="left", padx=2)
+        
+        # Thumbnails if enabled
+        if has_thumbs:
+            def add_thumb(p, img_pil):
                 if img_pil:
                     ctk_img = ctk.CTkImage(light_image=img_pil, dark_image=img_pil, size=(img_pil.width, img_pil.height))
                     self.image_refs.append(ctk_img)
-                    ctk.CTkLabel(parent, image=ctk_img, text="", width=60, height=60, fg_color="#18181B", corner_radius=6).pack(side="left", padx=10)
+                    ctk.CTkLabel(p, image=ctk_img, text="", width=45, height=45, fg_color="#18181B", corner_radius=4).pack(side="left", padx=3)
                 else:
-                    ctk.CTkLabel(parent, text="--", text_color="#52525B", width=60, height=60, fg_color="#18181B", corner_radius=6).pack(side="left", padx=10)
-            
+                    ctk.CTkLabel(p, text="--", text_color="#52525B", width=45, height=45, fg_color="#18181B", corner_radius=4).pack(side="left", padx=3)
             add_thumb(content, r.get("thumb_before"))
             if r["tag"] == "modified":
-                ctk.CTkLabel(content, text="➡️", text_color="#71717A", font=("Segoe UI", 14), width=20).pack(side="left")
+                ctk.CTkLabel(content, text="➡️", text_color="#71717A", font=("Segoe UI", 11), width=16).pack(side="left")
             add_thumb(content, r.get("thumb_after"))
             
-            # Layer Info
-            info_frame = ctk.CTkFrame(content, fg_color="transparent")
-            padding_x = 20 + (r.get("depth", 0) * 25)
-            info_frame.pack(side="left", padx=(padding_x, 15), fill="y", pady=5)
+        # Info
+        info_frame = ctk.CTkFrame(content, fg_color="transparent")
+        padding_x = 10 + (r.get("depth", 0) * 18)
+        info_frame.pack(side="left", padx=(padding_x, 10), fill="y", pady=2)
+        
+        kind_icons = {
+            "group": "📁", "type": "T", "shape": "⬛", "pixel": "🖼️", "smartobject": "🔗"
+        }
+        icon = kind_icons.get(r.get("kind", "unknown"), "📄")
+        name_prefix = "↳ " if r.get("depth", 0) > 0 else ""
+        name_text = f"{name_prefix}{icon} {r['name']}"
+        
+        ctk.CTkLabel(info_frame, text=name_text, font=("Segoe UI", 13, "bold"), text_color="#F4F4F5", anchor="w").pack(fill="x")
+        ctk.CTkLabel(info_frame, text=f"Path: {r['path']}", font=("Segoe UI", 10), text_color="#71717A", anchor="w").pack(fill="x")
+        if r.get("details"):
+            ctk.CTkLabel(info_frame, text=r["details"], font=("Segoe UI", 10), text_color="#93C5FD", anchor="w").pack(fill="x")
             
-            kind_icons = {
-                "group": "📁",
-                "type": "T",
-                "shape": "⬛",
-                "pixel": "🖼️",
-                "smartobject": "🔗"
-            }
-            icon = kind_icons.get(r.get("kind", "unknown"), "📄")
-            
-            name_prefix = "↳ " if r.get("depth", 0) > 0 else ""
-            name_text = f"{name_prefix}{icon} {r['name']}"
-            
-            ctk.CTkLabel(info_frame, text=name_text, font=("Segoe UI", 14, "bold"), text_color="#F4F4F5", anchor="w").pack(fill="x")
-            ctk.CTkLabel(info_frame, text=f"Path: {r['path']}", font=("Segoe UI", 11), text_color="#71717A", anchor="w").pack(fill="x", pady=(2,0))
-            if r["details"]:
-                ctk.CTkLabel(info_frame, text=r["details"], font=("Segoe UI", 11), text_color="#93C5FD", anchor="w").pack(fill="x", pady=(2, 0))
-            
-            # Status Badge
-            color_map = {"added": "#10B981", "removed": "#EF4444", "modified": "#3B82F6", "unchanged": "#3F3F46"}
-            badge_color = color_map.get(r["tag"], "#333")
-            
-            badge = ctk.CTkFrame(content, fg_color=badge_color, corner_radius=6)
-            badge.pack(side="right", padx=15)
-            
-            status_text = r["status"].split(" ")[1] if " " in r["status"] else r["status"]
-            if status_text == "Context":
-                status_text = "Folder"
-                
-            ctk.CTkLabel(badge, text=status_text.upper(), font=("Segoe UI", 10, "bold"), text_color="#FFFFFF", width=70, height=24).pack(padx=10, pady=2)
-            
-        total = sum(stats.values())
-        if total == 0:
-            self.empty_label.configure(text="✅ Files are structurally identical", text_color="#10B981")
-            self.empty_label.pack(pady=80)
-            self.summary_label.configure(text="✅ Files are structurally identical", text_color="#10B981")
-        else:
-            self.summary_label.configure(text=f"{total} Changes (+{stats['added']} -{stats['removed']} ~{stats['modified']})", text_color="#F8FAFC")
+        # Status Badge
+        color_map = {"added": "#10B981", "removed": "#EF4444", "modified": "#3B82F6", "unchanged": "#3F3F46"}
+        badge_color = color_map.get(r["tag"], "#333")
+        badge = ctk.CTkFrame(content, fg_color=badge_color, corner_radius=6)
+        badge.pack(side="right", padx=10)
+        
+        status_text = r["status"].split(" ")[1] if " " in r["status"] else r["status"]
+        if status_text == "Context": status_text = "Folder"
+        ctk.CTkLabel(badge, text=status_text.upper(), font=("Segoe UI", 10, "bold"), text_color="#FFFFFF", width=65, height=22).pack(padx=8, pady=2)
 
 # --- CLI Headless Mode (Automation API) ---
 def run_cli_mode(f1, f2, output_json):
