@@ -219,6 +219,144 @@ if ($dlg.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {{
         return os.path.join(clean_dir, default_name).replace('\\', '/')
     return None
 
+class SaveDiffOptionsModal(ctk.CTkToplevel):
+    def __init__(self, parent, on_confirm):
+        super().__init__(parent)
+        self.title("Save Diff PSD Options")
+        self.geometry("560x520")
+        self.resizable(False, False)
+        self.configure(fg_color="#18181B")
+        
+        self.transient(parent)
+        self.grab_set()
+        self.focus_force()
+        
+        self.on_confirm = on_confirm
+        self.selected_mode = ctk.StringVar(value="name_match")
+        self.prune_empty = ctk.BooleanVar(value=True)
+        
+        parent.update_idletasks()
+        px = parent.winfo_x() + (parent.winfo_width() - 560) // 2
+        py = parent.winfo_y() + (parent.winfo_height() - 520) // 2
+        self.geometry(f"+{max(10, px)}+{max(10, py)}")
+        
+        self._build_ui()
+
+    def _build_ui(self):
+        # Header
+        hdr = ctk.CTkFrame(self, fg_color="transparent")
+        hdr.pack(fill="x", padx=24, pady=(20, 12))
+        
+        t_lbl = ctk.CTkLabel(
+            hdr, text="💾 Export Diff PSD Options",
+            font=ctk.CTkFont(family="Segoe UI", size=18, weight="bold"),
+            text_color="#F4F4F5"
+        )
+        t_lbl.pack(anchor="w")
+        
+        s_lbl = ctk.CTkLabel(
+            hdr, text="Choose how old and modified layers are filtered from the output PSD",
+            font=ctk.CTkFont(family="Segoe UI", size=12),
+            text_color="#A1A1AA"
+        )
+        s_lbl.pack(anchor="w", pady=(2, 0))
+        
+        # Options Container
+        card = ctk.CTkFrame(self, fg_color="#27272A", corner_radius=10, border_width=1, border_color="#3F3F46")
+        card.pack(fill="x", padx=24, pady=8)
+        
+        def make_radio_row(val, title, desc, tag=""):
+            row = ctk.CTkFrame(card, fg_color="transparent")
+            row.pack(fill="x", padx=16, pady=10)
+            
+            top_line = ctk.CTkFrame(row, fg_color="transparent")
+            top_line.pack(fill="x", anchor="w")
+            
+            rb = ctk.CTkRadioButton(
+                top_line, text=title, value=val, variable=self.selected_mode,
+                font=ctk.CTkFont(family="Segoe UI", size=13, weight="bold"),
+                text_color="#F4F4F5", fg_color="#3B82F6", hover_color="#2563EB"
+            )
+            rb.pack(side="left")
+            
+            if tag:
+                badge = ctk.CTkLabel(
+                    top_line, text=tag,
+                    font=ctk.CTkFont(family="Segoe UI", size=10, weight="bold"),
+                    fg_color="#1E3A8A", text_color="#93C5FD", corner_radius=6, padx=6, pady=1
+                )
+                badge.pack(side="left", padx=(8, 0))
+                
+            d_lbl = ctk.CTkLabel(
+                row, text=desc,
+                font=ctk.CTkFont(family="Segoe UI", size=11),
+                text_color="#A1A1AA", justify="left", wraplength=480
+            )
+            d_lbl.pack(anchor="w", padx=(28, 0), pady=(2, 0))
+
+        make_radio_row(
+            "name_match",
+            "🔍 Smart Name Match (Cross-Group / Recommended)",
+            "Removes ANY layer whose name already existed in Old PSD (even if moved or in Japanese folders). Keeps only genuinely new parts (e.g. Santa clothes/accessories).",
+            tag="RECOMMENDED"
+        )
+        
+        div1 = ctk.CTkFrame(card, height=1, fg_color="#3F3F46")
+        div1.pack(fill="x", padx=12, pady=2)
+        
+        make_radio_row(
+            "strict",
+            "📁 Strict Path Diff (Exact Hierarchy Match)",
+            "Removes layers only if they have the exact same folder path and properties. Keeps all layers in newly created/renamed folders.",
+        )
+        
+        div2 = ctk.CTkFrame(card, height=1, fg_color="#3F3F46")
+        div2.pack(fill="x", padx=12, pady=2)
+        
+        make_radio_row(
+            "common_base",
+            "🧱 Keep Only Common Base (Invert Diff)",
+            "Keeps base model layers that exist in BOTH files (body, face, eyes) and discards all new clothes, accessories, and unique parts.",
+        )
+        
+        # Checkbox for empty folders
+        extra_frame = ctk.CTkFrame(self, fg_color="transparent")
+        extra_frame.pack(fill="x", padx=24, pady=(10, 4))
+        
+        chk = ctk.CTkCheckBox(
+            extra_frame, text="🧹 Automatically delete empty groups/folders",
+            variable=self.prune_empty,
+            font=ctk.CTkFont(family="Segoe UI", size=12),
+            text_color="#E4E4E7", fg_color="#3B82F6", hover_color="#2563EB"
+        )
+        chk.pack(anchor="w")
+        
+        # Button bar
+        btn_bar = ctk.CTkFrame(self, fg_color="transparent")
+        btn_bar.pack(fill="x", padx=24, pady=(20, 16), side="bottom")
+        
+        btn_cancel = ctk.CTkButton(
+            btn_bar, text="Cancel", width=90, height=36,
+            fg_color="#3F3F46", hover_color="#52525B", text_color="#F4F4F5",
+            command=self.destroy
+        )
+        btn_cancel.pack(side="left")
+        
+        btn_ok = ctk.CTkButton(
+            btn_bar, text="Next: Choose Save Location ➔", height=36,
+            fg_color="#2563EB", hover_color="#1D4ED8", text_color="#FFFFFF",
+            font=ctk.CTkFont(family="Segoe UI", size=13, weight="bold"),
+            command=self._confirm
+        )
+        btn_ok.pack(side="right")
+        
+    def _confirm(self):
+        mode = self.selected_mode.get()
+        prune_empty = self.prune_empty.get()
+        self.destroy()
+        if self.on_confirm:
+            self.on_confirm(mode, prune_empty)
+
 class PSDCompareProMax(ctk.CTk):
     def __init__(self):
         super().__init__()
@@ -521,14 +659,34 @@ class PSDCompareProMax(ctk.CTk):
                     messagebox.showerror("Error", f"Failed to analyze PSDs:\n{e}")
                     return
                 
-            init_dir = os.path.dirname(f2) if os.path.exists(f2) else ""
-            out_path = ask_save_psd_dialog(init_dir, "Modified_Diff_Only.psd")
-            if not out_path:
-                return
+            # Open the options modal dialog
+            def on_options_confirmed(mode, prune_empty):
+                init_dir = os.path.dirname(f2) if os.path.exists(f2) else ""
+                base_name = os.path.splitext(os.path.basename(f2))[0]
                 
-            self.btn_save_diff.configure(state="disabled", text="Saving...")
-            self.summary_label.configure(text="Saving Diff PSD...", text_color="#93C5FD")
-            threading.Thread(target=self.save_diff_worker, args=(f2, out_path), daemon=True).start()
+                if mode == "name_match":
+                    default_file = f"{base_name}_NewPartsOnly.psd"
+                elif mode == "strict":
+                    default_file = f"{base_name}_StrictDiff.psd"
+                elif mode == "common_base":
+                    default_file = f"{base_name}_CommonBase.psd"
+                else:
+                    default_file = f"{base_name}_Diff.psd"
+                    
+                out_path = ask_save_psd_dialog(init_dir, default_file)
+                if not out_path:
+                    return
+                    
+                self.btn_save_diff.configure(state="disabled", text="Saving...")
+                self.summary_label.configure(text=f"Saving Diff PSD ({mode})...", text_color="#93C5FD")
+                threading.Thread(
+                    target=self.save_diff_worker,
+                    args=(f1, f2, out_path, mode, prune_empty),
+                    daemon=True
+                ).start()
+                
+            SaveDiffOptionsModal(self, on_confirm=on_options_confirmed)
+            
         except Exception as e:
             import traceback
             err = traceback.format_exc()
@@ -536,16 +694,24 @@ class PSDCompareProMax(ctk.CTk):
                 f.write(f"UI Error:\n{err}\n")
             messagebox.showerror("Error", f"Save action failed:\n{e}")
         
-    def save_diff_worker(self, f2, out_path):
+    def save_diff_worker(self, f1, f2, out_path, mode="name_match", prune_empty=True):
         try:
-            changed_paths = set()
-            for r in self.last_results:
-                if r.get("tag") in ("added", "modified"):
-                    changed_paths.add(r["path"])
-                    
             from psd_tools import PSDImage
-            psd = PSDImage.open(f2)
+            psd2 = PSDImage.open(f2)
             
+            old_layer_names = set()
+            changed_paths = set()
+            
+            if mode in ("name_match", "common_base"):
+                psd1 = PSDImage.open(f1)
+                for l in psd1.descendants():
+                    if not l.is_group():
+                        old_layer_names.add(l.name.strip().lower())
+            elif mode == "strict":
+                for r in self.last_results:
+                    if r.get("tag") in ("added", "modified"):
+                        changed_paths.add(r["path"])
+                        
             def prune_layer(parent_group, current_path=""):
                 for child in reversed(list(parent_group)):
                     child_path = f"{current_path}/{child.name}" if current_path else child.name
@@ -553,35 +719,62 @@ class PSDCompareProMax(ctk.CTk):
                     
                     if is_group:
                         prune_layer(child, child_path)
-                        if len(child) == 0:
+                        if prune_empty and len(child) == 0:
                             parent_group.remove(child)
                     else:
-                        if child_path not in changed_paths:
+                        should_remove = False
+                        if mode == "strict":
+                            if child_path not in changed_paths:
+                                should_remove = True
+                        elif mode == "name_match":
+                            if child.name.strip().lower() in old_layer_names:
+                                should_remove = True
+                        elif mode == "common_base":
+                            if child.name.strip().lower() not in old_layer_names:
+                                should_remove = True
+                                
+                        if should_remove:
                             parent_group.remove(child)
                             
-            prune_layer(psd)
-            remaining_count = len(list(psd.descendants()))
+            prune_layer(psd2)
+            remaining_non_groups = len([l for l in psd2.descendants() if not l.is_group()])
+            total_elements = len(list(psd2.descendants()))
+            
             # Write record directly to avoid slow 6000x6000 software composite rendering in Python
             with open(out_path, "wb") as f:
-                psd._record.write(f)
+                psd2._record.write(f)
                 
-            def on_success(count=remaining_count):
-                self.summary_label.configure(text=f"✅ Saved Diff PSD ({count} layers)", text_color="#10B981")
-                # Open folder and select file in Windows Explorer
+            mode_titles = {
+                "name_match": "Smart Name Match (New Parts Only)",
+                "strict": "Strict Path Diff (Exact Hierarchy)",
+                "common_base": "Common Base (Invert Diff)"
+            }
+            mode_label = mode_titles.get(mode, mode)
+                
+            def on_success():
+                self.summary_label.configure(
+                    text=f"✅ Saved Diff PSD ({remaining_non_groups} layers)",
+                    text_color="#10B981"
+                )
                 try:
                     import subprocess
                     subprocess.Popen(f'explorer /select,"{os.path.normpath(out_path)}"')
                 except Exception:
                     pass
-                msg = f"Saved Diff PSD successfully to:\n{out_path}\n\n📦 Total Layers Saved: {count} (Added & Modified only)"
-                messagebox.showinfo("Success", msg)
+                msg = (
+                    f"Saved Diff PSD successfully to:\n{out_path}\n\n"
+                    f"🎯 Export Mode: {mode_label}\n"
+                    f"📦 Active Layers Saved: {remaining_non_groups} layers\n"
+                    f"📁 Total Elements: {total_elements} (including groups)"
+                )
+                messagebox.showinfo("Diff Export Complete", msg)
                 
             self.after(0, on_success)
             
         except Exception as e:
             import traceback
             err_msg = traceback.format_exc()
-            with open(r"D:\Ai\_automation\error_log.txt", "a") as f:
+            with open(r"D:\Ai\PSD-Compare-ProMax\save_diff_log.txt", "a", encoding="utf-8") as f:
                 f.write("Save Diff Error:\n" + err_msg + "\n")
             self.after(0, lambda: messagebox.showerror("Error", f"Failed to save Diff PSD:\n{str(e)}"))
         finally:
