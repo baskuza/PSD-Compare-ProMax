@@ -357,6 +357,463 @@ class SaveDiffOptionsModal(ctk.CTkToplevel):
         if self.on_confirm:
             self.on_confirm(mode, prune_empty)
 
+
+class Live2DRealignModal(ctk.CTkToplevel):
+    def __init__(self, parent, f_blueprint, f_artwork):
+        super().__init__(parent)
+        self.title("Live2D PSD Re-Aligner & Matcher")
+        self.geometry("1060x760")
+        self.minsize(920, 620)
+        self.configure(fg_color="#18181B")
+        
+        self.transient(parent)
+        self.grab_set()
+        self.focus_force()
+        
+        self.f_blueprint = f_blueprint
+        self.f_artwork = f_artwork
+        self.all_items = []
+        self.current_filter = "all"
+        self.search_query = ""
+        self.prune_empty_var = ctk.BooleanVar(value=True)
+        self.rename_layers_var = ctk.BooleanVar(value=True)
+        
+        parent.update_idletasks()
+        px = parent.winfo_x() + (parent.winfo_width() - 1060) // 2
+        py = parent.winfo_y() + (parent.winfo_height() - 760) // 2
+        self.geometry(f"+{max(10, px)}+{max(10, py)}")
+        
+        self._build_ui()
+        self.start_analysis()
+        
+    def _build_ui(self):
+        # 1. Header
+        hdr = ctk.CTkFrame(self, fg_color="transparent")
+        hdr.pack(fill="x", padx=28, pady=(20, 10))
+        
+        title_lbl = ctk.CTkLabel(
+            hdr, text="🎭 Live2D PSD Re-Aligner & Matcher",
+            font=ctk.CTkFont(family="Segoe UI", size=20, weight="bold"),
+            text_color="#F4F4F5"
+        )
+        title_lbl.pack(anchor="w")
+        
+        sub_lbl = ctk.CTkLabel(
+            hdr, text="Re-aligns new artwork layers to Live2D model hierarchy via Spatial Overlap (IoU) + Silhouette + Name",
+            font=ctk.CTkFont(family="Segoe UI", size=12),
+            text_color="#A1A1AA"
+        )
+        sub_lbl.pack(anchor="w", pady=(2, 0))
+        
+        # 2. File Banner Cards
+        banner = ctk.CTkFrame(self, fg_color="#27272A", corner_radius=10, border_width=1, border_color="#3F3F46")
+        banner.pack(fill="x", padx=28, pady=(0, 12))
+        
+        b_box = ctk.CTkFrame(banner, fg_color="transparent")
+        b_box.pack(side="left", fill="both", expand=True, padx=16, pady=10)
+        ctk.CTkLabel(b_box, text="📐 BLUEPRINT (Live2D Hierarchy)", font=ctk.CTkFont(family="Segoe UI", size=10, weight="bold"), text_color="#60A5FA").pack(anchor="w")
+        ctk.CTkLabel(b_box, text=os.path.basename(self.f_blueprint), font=ctk.CTkFont(family="Segoe UI", size=13, weight="bold"), text_color="#F4F4F5").pack(anchor="w")
+        
+        ctk.CTkLabel(banner, text="➔", font=ctk.CTkFont(size=20, weight="bold"), text_color="#A1A1AA").pack(side="left", padx=10)
+        
+        a_box = ctk.CTkFrame(banner, fg_color="transparent")
+        a_box.pack(side="left", fill="both", expand=True, padx=16, pady=10)
+        ctk.CTkLabel(a_box, text="🎨 SOURCE ARTWORK (New Pixels)", font=ctk.CTkFont(family="Segoe UI", size=10, weight="bold"), text_color="#C084FC").pack(anchor="w")
+        ctk.CTkLabel(a_box, text=os.path.basename(self.f_artwork), font=ctk.CTkFont(family="Segoe UI", size=13, weight="bold"), text_color="#F4F4F5").pack(anchor="w")
+        
+        # 3. Filter Tabs & Search Bar
+        ctrl_bar = ctk.CTkFrame(self, fg_color="transparent")
+        ctrl_bar.pack(fill="x", padx=28, pady=(0, 8))
+        
+        self.tabs_frame = ctk.CTkFrame(ctrl_bar, fg_color="transparent")
+        self.tabs_frame.pack(side="left")
+        
+        self.tab_all = ctk.CTkButton(
+            self.tabs_frame, text="All Layers (Scanning...)", height=32, width=130,
+            fg_color="#3B82F6", hover_color="#2563EB", text_color="#FFFFFF", font=ctk.CTkFont(family="Segoe UI", size=12, weight="bold"),
+            command=lambda: self._set_filter("all")
+        )
+        self.tab_all.pack(side="left", padx=(0, 8))
+        
+        self.tab_matched = ctk.CTkButton(
+            self.tabs_frame, text="🟢 Matched (0)", height=32, width=120,
+            fg_color="#27272A", hover_color="#3F3F46", text_color="#A1A1AA", font=ctk.CTkFont(family="Segoe UI", size=12),
+            command=lambda: self._set_filter("matched")
+        )
+        self.tab_matched.pack(side="left", padx=(0, 8))
+        
+        self.tab_new = ctk.CTkButton(
+            self.tabs_frame, text="🟣 New Parts (0)", height=32, width=120,
+            fg_color="#27272A", hover_color="#3F3F46", text_color="#A1A1AA", font=ctk.CTkFont(family="Segoe UI", size=12),
+            command=lambda: self._set_filter("new_part")
+        )
+        self.tab_new.pack(side="left")
+        
+        # Search input on the right
+        self.search_var = ctk.StringVar()
+        self.search_var.trace_add("write", self._on_search_changed)
+        search_entry = ctk.CTkEntry(
+            ctrl_bar, textvariable=self.search_var, placeholder_text="🔍 Search layers...",
+            width=220, height=32, fg_color="#27272A", border_color="#3F3F46", font=ctk.CTkFont(family="Segoe UI", size=12)
+        )
+        search_entry.pack(side="right")
+        
+        # 4. Table Header
+        tbl_hdr = ctk.CTkFrame(self, fg_color="#27272A", height=34, corner_radius=6)
+        tbl_hdr.pack(fill="x", padx=28, pady=(0, 4))
+        
+        ctk.CTkLabel(tbl_hdr, text="STATUS / MATCH", font=ctk.CTkFont(family="Segoe UI", size=11, weight="bold"), text_color="#A1A1AA", width=140, anchor="w").pack(side="left", padx=(16, 0))
+        ctk.CTkLabel(tbl_hdr, text="SOURCE ARTWORK LAYER", font=ctk.CTkFont(family="Segoe UI", size=11, weight="bold"), text_color="#A1A1AA", width=250, anchor="w").pack(side="left", padx=10)
+        ctk.CTkLabel(tbl_hdr, text="➔ TARGET LIVE2D HIERARCHY", font=ctk.CTkFont(family="Segoe UI", size=11, weight="bold"), text_color="#A1A1AA", width=340, anchor="w").pack(side="left", padx=10)
+        ctk.CTkLabel(tbl_hdr, text="CANVAS BBOX", font=ctk.CTkFont(family="Segoe UI", size=11, weight="bold"), text_color="#A1A1AA", anchor="w").pack(side="left", padx=10)
+        
+        # 5. Scrollable Table
+        self.table_scroll = ctk.CTkScrollableFrame(self, fg_color="#18181B", corner_radius=8, border_width=1, border_color="#27272A")
+        self.table_scroll.pack(fill="both", expand=True, padx=28, pady=(0, 10))
+        
+        # 6. Bottom Bar
+        bottom_frame = ctk.CTkFrame(self, fg_color="transparent")
+        bottom_frame.pack(fill="x", padx=28, pady=(10, 20), side="bottom")
+        
+        options_row = ctk.CTkFrame(bottom_frame, fg_color="transparent")
+        options_row.pack(side="left")
+        
+        chk_prune = ctk.CTkCheckBox(
+            options_row, text="🧹 Delete empty original groups", variable=self.prune_empty_var,
+            font=ctk.CTkFont(family="Segoe UI", size=12), text_color="#E4E4E7", fg_color="#7C3AED", hover_color="#6D28D9"
+        )
+        chk_prune.pack(side="left", padx=(0, 16))
+        
+        chk_rename = ctk.CTkCheckBox(
+            options_row, text="🏷️ Rename layers to match Blueprint exactly", variable=self.rename_layers_var,
+            font=ctk.CTkFont(family="Segoe UI", size=12), text_color="#E4E4E7", fg_color="#7C3AED", hover_color="#6D28D9"
+        )
+        chk_rename.pack(side="left")
+        
+        action_row = ctk.CTkFrame(bottom_frame, fg_color="transparent")
+        action_row.pack(side="right")
+        
+        self.status_lbl = ctk.CTkLabel(
+            action_row, text="Scanning...", font=ctk.CTkFont(family="Segoe UI", size=12, weight="bold"), text_color="#93C5FD"
+        )
+        self.status_lbl.pack(side="left", padx=(0, 16))
+        
+        btn_close = ctk.CTkButton(
+            action_row, text="Close", width=80, height=36, fg_color="#3F3F46", hover_color="#52525B", text_color="#F4F4F5",
+            command=self.destroy
+        )
+        btn_close.pack(side="left", padx=(0, 10))
+        
+        self.btn_export = ctk.CTkButton(
+            action_row, text="🚀 Export Re-Aligned PSD for Live2D ➔", height=36,
+            fg_color="#7C3AED", hover_color="#6D28D9", text_color="#FFFFFF", font=ctk.CTkFont(family="Segoe UI", size=13, weight="bold"),
+            command=self._export_psd
+        )
+        self.btn_export.pack(side="left")
+        
+    def start_analysis(self):
+        self.status_lbl.configure(text="⏳ Scanning Blueprint & Artwork layers...", text_color="#93C5FD")
+        self.btn_export.configure(state="disabled")
+        threading.Thread(target=self._analysis_worker, daemon=True).start()
+
+    def _analysis_worker(self):
+        try:
+            from psd_tools import PSDImage
+            import difflib
+            
+            psd_b = PSDImage.open(self.f_blueprint)
+            psd_a = PSDImage.open(self.f_artwork)
+            
+            bp_layers = []
+            def scan_bp(parent, cur_path=''):
+                for c in parent:
+                    path = f"{cur_path}/{c.name}" if cur_path else c.name
+                    if c.is_group():
+                        scan_bp(c, path)
+                    else:
+                        if c.size[0] > 0 and c.size[1] > 0:
+                            bp_layers.append({
+                                'name': c.name.strip(),
+                                'path': path,
+                                'group_path': cur_path,
+                                'bbox': c.bbox
+                            })
+            scan_bp(psd_b)
+            
+            art_layers = [l for l in psd_a.descendants() if not l.is_group() and l.size[0] > 0 and l.size[1] > 0]
+            
+            def calc_iou(b1, b2):
+                w = max(0, min(b1[2], b2[2]) - max(b1[0], b2[0]))
+                h = max(0, min(b1[3], b2[3]) - max(b1[1], b2[1]))
+                inter = w * h
+                if inter <= 0: return 0.0
+                a1 = (b1[2] - b1[0]) * (b1[3] - b1[1])
+                a2 = (b2[2] - b2[0]) * (b2[3] - b2[1])
+                return inter / (a1 + a2 - inter)
+                
+            items = []
+            for idx, a in enumerate(art_layers):
+                best_bp = None
+                best_score = 0.0
+                a_name = a.name.strip()
+                
+                for b in bp_layers:
+                    iou = calc_iou(b['bbox'], a.bbox)
+                    name_sim = difflib.SequenceMatcher(None, b['name'].lower(), a_name.lower()).ratio()
+                    if b['name'].lower() == a_name.lower():
+                        score = 0.95 + 0.05 * iou
+                    else:
+                        score = 0.60 * iou + 0.40 * name_sim
+                        
+                    if score > best_score:
+                        best_score = score
+                        best_bp = b
+                        
+                bbox_str = f"[{a.bbox[0]}, {a.bbox[1]}] {a.size[0]}x{a.size[1]}"
+                
+                if best_score >= 0.50 and best_bp is not None:
+                    items.append({
+                        'art_index': idx,
+                        'status': 'matched',
+                        'score': best_score,
+                        'art_name': a_name,
+                        'bbox_str': bbox_str,
+                        'bp_name': best_bp['name'],
+                        'bp_group': best_bp['group_path'],
+                        'bp_path': best_bp['path']
+                    })
+                else:
+                    items.append({
+                        'art_index': idx,
+                        'status': 'new_part',
+                        'score': best_score,
+                        'art_name': a_name,
+                        'bbox_str': bbox_str,
+                        'bp_name': a_name,
+                        'bp_group': '[NEW_PARTS]',
+                        'bp_path': f"[NEW_PARTS]/{a_name}"
+                    })
+                    
+            items.sort(key=lambda x: (0 if x['status'] == 'matched' else 1, -x['score']))
+            self.all_items = items
+            self.after(0, self._on_analysis_done)
+        except Exception as e:
+            import traceback
+            err = traceback.format_exc()
+            self.after(0, lambda: self._on_analysis_error(str(e), err))
+
+    def _on_analysis_error(self, err_msg, traceback_str):
+        with open(r"D:\Ai\PSD-Compare-ProMax\save_diff_log.txt", "a", encoding="utf-8") as f:
+            f.write(f"Live2D Realign Error: {traceback_str}\n")
+        self.status_lbl.configure(text="⚠️ Analysis Failed", text_color="#EF4444")
+        messagebox.showerror("Error", f"Failed to analyze Live2D structures:\n{err_msg}")
+
+    def _on_analysis_done(self):
+        matched_cnt = len([x for x in self.all_items if x['status'] == 'matched'])
+        new_cnt = len([x for x in self.all_items if x['status'] == 'new_part'])
+        total_cnt = len(self.all_items)
+        
+        self.tab_all.configure(text=f"All Layers ({total_cnt})")
+        self.tab_matched.configure(text=f"🟢 Matched ({matched_cnt})")
+        self.tab_new.configure(text=f"🟣 New Parts ({new_cnt})")
+        self.status_lbl.configure(text=f"✅ Ready: {matched_cnt} Matched • {new_cnt} New Parts", text_color="#10B981")
+        self.btn_export.configure(state="normal")
+        
+        self._render_table()
+
+    def _set_filter(self, filter_name):
+        self.current_filter = filter_name
+        # Update tab styles
+        tabs = [("all", self.tab_all), ("matched", self.tab_matched), ("new_part", self.tab_new)]
+        for name, btn in tabs:
+            if name == filter_name:
+                btn.configure(fg_color="#3B82F6", text_color="#FFFFFF", font=ctk.CTkFont(family="Segoe UI", size=12, weight="bold"))
+            else:
+                btn.configure(fg_color="#27272A", text_color="#A1A1AA", font=ctk.CTkFont(family="Segoe UI", size=12))
+        self._render_table()
+
+    def _on_search_changed(self, *args):
+        self.search_query = self.search_var.get().strip().lower()
+        self._render_table()
+
+    def _render_table(self):
+        for widget in self.table_scroll.winfo_children():
+            widget.destroy()
+            
+        filtered = []
+        for item in self.all_items:
+            if self.current_filter != "all" and item['status'] != self.current_filter:
+                continue
+            if self.search_query:
+                if self.search_query not in item['art_name'].lower() and self.search_query not in item['bp_path'].lower():
+                    continue
+            filtered.append(item)
+            
+        # Render chunk of rows (max 60 for initial view for performance)
+        for row_idx, item in enumerate(filtered[:60]):
+            self._create_table_row(row_idx, item)
+            
+        if len(filtered) > 60:
+            more_lbl = ctk.CTkLabel(
+                self.table_scroll, text=f"... and {len(filtered) - 60} more layers (all will be exported)",
+                font=ctk.CTkFont(family="Segoe UI", size=11, slant="italic"), text_color="#71717A"
+            )
+            more_lbl.pack(pady=8)
+
+    def _create_table_row(self, row_idx, item):
+        bg_col = "#202023" if row_idx % 2 == 0 else "#18181B"
+        row = ctk.CTkFrame(self.table_scroll, fg_color=bg_col, height=36, corner_radius=4)
+        row.pack(fill="x", pady=1)
+        
+        # Status Badge
+        badge_frame = ctk.CTkFrame(row, fg_color="transparent", width=140)
+        badge_frame.pack(side="left", padx=(10, 0))
+        
+        if item['status'] == 'matched':
+            pct = int(item['score'] * 100)
+            tag_col = "#064E3B" if pct >= 80 else "#78350F"
+            txt_col = "#34D399" if pct >= 80 else "#FBBF24"
+            badge = ctk.CTkLabel(
+                badge_frame, text=f"🟢 {pct}% MATCH",
+                font=ctk.CTkFont(family="Segoe UI", size=10, weight="bold"),
+                fg_color=tag_col, text_color=txt_col, corner_radius=4, padx=6, pady=2
+            )
+            badge.pack(side="left")
+        else:
+            badge = ctk.CTkLabel(
+                badge_frame, text="🟣 NEW PART",
+                font=ctk.CTkFont(family="Segoe UI", size=10, weight="bold"),
+                fg_color="#581C87", text_color="#D8B4FE", corner_radius=4, padx=6, pady=2
+            )
+            badge.pack(side="left")
+            
+        # Source Layer Name
+        art_lbl = ctk.CTkLabel(
+            row, text=item['art_name'], font=ctk.CTkFont(family="Segoe UI", size=12),
+            text_color="#F4F4F5", width=250, anchor="w"
+        )
+        art_lbl.pack(side="left", padx=10)
+        
+        # Target Live2D Hierarchy
+        target_txt = item['bp_path'] if item['status'] == 'matched' else "[NEW_PARTS] (New Folder)"
+        t_col = "#93C5FD" if item['status'] == 'matched' else "#C084FC"
+        bp_lbl = ctk.CTkLabel(
+            row, text=target_txt, font=ctk.CTkFont(family="Segoe UI", size=12, weight="bold" if item['status'] == 'matched' else "normal"),
+            text_color=t_col, width=340, anchor="w"
+        )
+        bp_lbl.pack(side="left", padx=10)
+        
+        # Canvas Bounding Box
+        bbox_lbl = ctk.CTkLabel(
+            row, text=item['bbox_str'], font=ctk.CTkFont(family="Segoe UI", size=11),
+            text_color="#71717A", anchor="w"
+        )
+        bbox_lbl.pack(side="left", padx=10)
+
+    def _export_psd(self):
+        art_base = os.path.splitext(os.path.basename(self.f_artwork))[0]
+        init_dir = os.path.dirname(self.f_artwork)
+        default_file = f"{art_base}_Live2D_Aligned.psd"
+        out_path = ask_save_psd_dialog(init_dir, default_file)
+        if not out_path:
+            return
+            
+        self.btn_export.configure(state="disabled", text="Exporting...")
+        self.status_lbl.configure(text="Saving Re-Aligned PSD for Live2D...", text_color="#93C5FD")
+        
+        prune_empty = self.prune_empty_var.get()
+        rename_layers = self.rename_layers_var.get()
+        
+        def worker():
+            try:
+                from psd_tools import PSDImage
+                psd_a = PSDImage.open(self.f_artwork)
+                
+                created_groups = {}
+                def get_or_create_group(parent_psd, group_path):
+                    if not group_path:
+                        return parent_psd
+                    parts = group_path.split('/')
+                    cur = ''
+                    parent = parent_psd
+                    for p in parts:
+                        cur = f"{cur}/{p}" if cur else p
+                        if cur not in created_groups:
+                            found = next((c for c in parent if c.is_group() and c.name == p), None)
+                            if found is None:
+                                new_g = parent_psd.create_group(name=p)
+                                if parent != parent_psd:
+                                    new_g.move_to_group(parent)
+                                created_groups[cur] = new_g
+                                parent = new_g
+                            else:
+                                created_groups[cur] = found
+                                parent = found
+                        else:
+                            parent = created_groups[cur]
+                    return parent
+                    
+                new_parts_group = psd_a.create_group(name='[NEW_PARTS]')
+                art_descendants = [l for l in psd_a.descendants() if not l.is_group() and l.size[0] > 0 and l.size[1] > 0]
+                
+                for item in self.all_items:
+                    idx = item['art_index']
+                    if idx >= len(art_descendants):
+                        continue
+                    layer = art_descendants[idx]
+                    
+                    if item['status'] == 'matched':
+                        target_grp = get_or_create_group(psd_a, item['bp_group'])
+                        if layer.parent != target_grp:
+                            layer.move_to_group(target_grp)
+                        if rename_layers:
+                            layer.name = item['bp_name']
+                    else:
+                        if layer.parent != new_parts_group:
+                            layer.move_to_group(new_parts_group)
+                            
+                if prune_empty:
+                    def prune_empty_groups(parent):
+                        for c in reversed(list(parent)):
+                            if c.is_group():
+                                prune_empty_groups(c)
+                                if len(c) == 0 and c != new_parts_group:
+                                    parent.remove(c)
+                    prune_empty_groups(psd_a)
+                    
+                with open(out_path, "wb") as f:
+                    psd_a._record.write(f)
+                    
+                def on_success():
+                    self.status_lbl.configure(text="✅ Export Complete!", text_color="#10B981")
+                    try:
+                        import subprocess
+                        subprocess.Popen(f'explorer /select,"{os.path.normpath(out_path)}"')
+                    except Exception:
+                        pass
+                    msg = (
+                        f"Live2D Re-Aligned PSD exported successfully!\n\n"
+                        f"📁 Output: {out_path}\n"
+                        f"🟢 Matched to Blueprint: {len([x for x in self.all_items if x['status'] == 'matched'])} layers\n"
+                        f"🟣 In [NEW_PARTS]: {len([x for x in self.all_items if x['status'] == 'new_part'])} layers\n\n"
+                        f"You can now import this file directly into Live2D Cubism without breaking your ArtMeshes!"
+                    )
+                    messagebox.showinfo("Export Successful", msg)
+                    self.destroy()
+                    
+                self.after(0, on_success)
+            except Exception as e:
+                import traceback
+                err = traceback.format_exc()
+                with open(r"D:\Ai\PSD-Compare-ProMax\save_diff_log.txt", "a", encoding="utf-8") as f:
+                    f.write(f"Live2D Export Worker Error:\n{err}\n")
+                self.after(0, lambda: messagebox.showerror("Export Error", f"Failed to export PSD:\n{e}"))
+            finally:
+                self.after(0, lambda: self.btn_export.configure(state="normal", text="🚀 Export Re-Aligned PSD for Live2D ➔"))
+                
+        threading.Thread(target=worker, daemon=True).start()
+
+
 class PSDCompareProMax(ctk.CTk):
     def __init__(self):
         super().__init__()
@@ -479,6 +936,13 @@ class PSDCompareProMax(ctk.CTk):
                                          fg_color=card_color, hover_color=border_color, text_color="#FFFFFF", border_width=1, border_color=border_color, corner_radius=8,
                                          command=self.save_diff_psd)
         self.btn_save_diff.pack(side="left", padx=10)
+        
+        self.btn_realign = ctk.CTkButton(action_frame, text="🎭 Match for Live2D", 
+                                         font=("Segoe UI", 13, "bold"), height=40, width=160,
+                                         fg_color="#7C3AED", hover_color="#6D28D9", text_color="#FFFFFF",
+                                         border_width=1, border_color="#8B5CF6", corner_radius=8,
+                                         command=self.open_live2d_realigner)
+        self.btn_realign.pack(side="left", padx=10)
         
         self.summary_label = ctk.CTkLabel(action_frame, text="", font=("Segoe UI", 14, "bold"))
         self.summary_label.pack(side="right", padx=20)
@@ -624,6 +1088,27 @@ class PSDCompareProMax(ctk.CTk):
         # Run in thread so GUI doesn't freeze
         threading.Thread(target=self.generate_visual_worker, args=(f1, f2), daemon=True).start()
         
+    def open_live2d_realigner(self):
+        f1 = self.file1_path.get().strip().strip('"').strip("'")
+        f2 = self.file2_path.get().strip().strip('"').strip("'")
+        if not f1 or not f2:
+            self.summary_label.configure(text="⚠️ Select both PSD files first!", text_color="#EF4444")
+            messagebox.showwarning(
+                "Select PSD Files",
+                "Please select both PSD files:\n\n"
+                "• File 1 (Left / Original): Live2D Exported Blueprint PSD (Correct model hierarchy)\n"
+                "• File 2 (Right / Modified): New Artwork PSD (New visual layers)"
+            )
+            return
+        if not os.path.exists(f1):
+            messagebox.showerror("Error", f"Blueprint PSD not found:\n{f1}")
+            return
+        if not os.path.exists(f2):
+            messagebox.showerror("Error", f"Artwork PSD not found:\n{f2}")
+            return
+            
+        Live2DRealignModal(self, f1, f2)
+
     def save_diff_psd(self):
         try:
             f1 = self.file1_path.get().strip().strip('"').strip("'")
